@@ -2,7 +2,7 @@
 
 Botón en línea para grupos. Cada participante lo presiona al terminar una actividad; **todo el grupo recibe el aviso** y la app guarda una **bitácora de quién terminó primero** y en cuánto tiempo.
 
-> Este material fue elaborado con asistencia de Claude (Anthropic) y revisado por [nombre].
+> Este material fue elaborado con asistencia de Claude (Anthropic) y revisado por Jesus Armando Tapia Gallegos.
 
 ## Qué hace
 
