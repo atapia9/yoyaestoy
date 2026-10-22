@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { Server } from 'socket.io';
 import { Game, GameError } from './public/js/game.js';
-import { applyAction, randomCode } from './public/js/room.js';
+import { applyAction, randomCode, StateFeed } from './public/js/room.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -17,9 +17,15 @@ const CORS_ORIGIN = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',')
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: CORS_ORIGIN } });
+// La compresión reduce el tráfico de los estados grandes. Además evita un fallo de
+// Socket.IO 4.8 que, con mucha carga, corrompe los mensajes enviados a muchos a la vez
+// (los clientes veían "Invalid WebSocket frame: invalid UTF-8 sequence" y se desconectaban).
+const io = new Server(httpServer, {
+  cors: { origin: CORS_ORIGIN },
+  perMessageDeflate: { threshold: 1024 },
+});
 
-/** @type {Map<string, {code: string, game: Game, hostToken: string, touched: number}>} */
+/** @type {Map<string, {code: string, game: Game, feed: StateFeed, hostToken: string, touched: number}>} */
 const rooms = new Map();
 
 app.get('/api/health', (_req, res) => {
@@ -43,11 +49,13 @@ function errorMessage(err) {
   return 'Error interno del servidor.';
 }
 
-function emitState(code) {
-  const room = rooms.get(code);
-  if (!room) return;
-  io.to(`${code}:host`).emit('state', room.game.snapshot({ includeAnswers: true }));
-  io.to(`${code}:players`).emit('state', room.game.snapshot());
+function createRoom(code) {
+  const game = new Game();
+  const feed = new StateFeed(game, (hostMsg, playerMsg) => {
+    io.to(`${code}:host`).emit('state', hostMsg);
+    io.to(`${code}:players`).emit('state', playerMsg);
+  });
+  return { code, game, feed, hostToken: randomUUID(), touched: Date.now() };
 }
 
 function leaveRooms(socket) {
@@ -67,11 +75,11 @@ io.on('connection', (socket) => {
     ack = safeAck(ack);
     let code;
     do code = randomCode(4); while (rooms.has(code));
-    const room = { code, game: new Game(), hostToken: randomUUID(), touched: Date.now() };
+    const room = createRoom(code);
     rooms.set(code, room);
     bindHost(socket, room);
     ack({ ok: true, code, hostToken: room.hostToken });
-    emitState(code);
+    socket.emit('state', room.feed.full(true));
   });
 
   socket.on('host:resume', (data, ack) => {
@@ -82,7 +90,7 @@ io.on('connection', (socket) => {
     }
     bindHost(socket, room);
     ack({ ok: true, code: room.code });
-    emitState(room.code);
+    socket.emit('state', room.feed.full(true));
   });
 
   socket.on('player:join', (data, ack) => {
@@ -96,7 +104,8 @@ io.on('connection', (socket) => {
       socket.data = { code: room.code, clientId, isHost: false };
       socket.join(`${room.code}:players`);
       ack({ ok: true, result: out.result });
-      emitState(room.code);
+      socket.emit('state', room.feed.full(false));
+      room.feed.changed(out.parts, { urgent: out.urgent, patch: out.patch });
     } catch (err) {
       ack({ ok: false, error: errorMessage(err) });
     }
@@ -108,11 +117,14 @@ io.on('connection', (socket) => {
     const room = code && getRoom(code);
     if (!room) return ack({ ok: false, error: 'No estás conectado a ninguna sala.' });
     if (data?.action === 'join') return ack({ ok: false, error: 'Acción no permitida.' });
+    if (data?.action === 'sync') return ack({ ok: true, result: room.feed.full(isHost) });
     try {
       const out = applyAction(room.game, { clientId, isHost }, data?.action, data?.payload ?? {});
       ack({ ok: true, result: out.result });
-      if (out.notify) io.to([`${code}:host`, `${code}:players`]).emit('notify', out.notify);
-      emitState(code);
+      // El aviso "ya terminó" viaja agrupado con el siguiente estado; los demás salen al instante.
+      if (out.notify?.kind === 'press') room.feed.event(out.notify);
+      else if (out.notify) io.to([`${code}:host`, `${code}:players`]).emit('notify', out.notify);
+      room.feed.changed(out.parts, { urgent: out.urgent, patch: out.patch });
     } catch (err) {
       ack({ ok: false, error: errorMessage(err) });
     }
@@ -126,14 +138,16 @@ io.on('connection', (socket) => {
     const others = await io.in(`${code}:players`).fetchSockets();
     if (!others.some((s) => s.data?.clientId === clientId)) {
       room.game.setConnected(clientId, false);
-      emitState(code);
+      room.feed.changed(['players', 'ranking']);
     }
   });
 });
 
 setInterval(() => {
   const now = Date.now();
-  for (const [code, room] of rooms) if (now - room.touched > ROOM_TTL_MS) rooms.delete(code);
+  for (const [code, room] of rooms) {
+    if (now - room.touched > ROOM_TTL_MS) { room.feed.dispose(); rooms.delete(code); }
+  }
 }, 30 * 60 * 1000).unref();
 
 httpServer.listen(PORT, () => {

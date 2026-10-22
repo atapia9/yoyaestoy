@@ -7,15 +7,26 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "carga": "node scripts/prueba-carga.js",
+    "costo-p2p": "node scripts/costo-p2p.js"
   },
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["buzzer", "aula", "socket.io", "github-pages", "peerjs"],
+  "keywords": [
+    "buzzer",
+    "aula",
+    "socket.io",
+    "github-pages",
+    "peerjs"
+  ],
   "license": "MIT",
   "dependencies": {
     "express": "^4.21.2",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
   }
 }

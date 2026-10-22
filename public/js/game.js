@@ -19,6 +19,21 @@ export function roundWinner(round) {
     .sort((a, b) => a.elapsedMs - b.elapsedMs)[0] ?? null;
 }
 
+/** Fila del resumen de rondas (pequeña: no incluye la lista de participaciones). */
+export function summarizeRound(round) {
+  const first = round.presses[0];
+  const winner = roundWinner(round);
+  return {
+    number: round.number,
+    question: round.question,
+    status: round.status,
+    count: round.presses.length,
+    pending: round.presses.some((p) => p.valid === null),
+    first: first ? { name: first.name, elapsedMs: first.elapsedMs } : null,
+    winner: winner ? { playerId: winner.playerId, name: winner.name, elapsedMs: winner.elapsedMs } : null,
+  };
+}
+
 export class Game {
   constructor({ now = () => Date.now(), maxRounds = MAX_ROUNDS } = {}) {
     this.now = now;
@@ -217,6 +232,28 @@ export class Game {
         };
       }),
       ranking: this.ranking(),
+    };
+  }
+
+  publicPlayers() {
+    return [...this.players.values()].map(({ id, name, connected }) => ({ id, name, connected }));
+  }
+
+  /**
+   * Vista de una ronda. `from` permite mandar solo las participaciones nuevas.
+   * Las respuestas se ocultan a los participantes mientras la ronda está abierta.
+   */
+  roundView(round, { includeAnswers = false, from = 0 } = {}) {
+    const reveal = includeAnswers || round.status === 'closed';
+    return {
+      number: round.number,
+      question: round.question,
+      startedAt: round.startedAt,
+      endedAt: round.endedAt,
+      status: round.status,
+      winnerId: roundWinner(round)?.playerId ?? null,
+      from,
+      presses: round.presses.slice(from).map((p) => (reveal ? { ...p } : { ...p, answer: p.answer ? '•••' : '' })),
     };
   }
 

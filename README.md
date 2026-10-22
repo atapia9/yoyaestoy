@@ -49,6 +49,7 @@ No necesitas instalar nada ni crear cuenta. Funciona en computadora, tableta y c
 | Dónde corre | `npm start` en tu computadora o en un hosting de Node (Render, Railway, Codespaces…) | Página estática en GitHub Pages, sin servidor propio |
 | Cómo se conectan | Socket.IO al servidor | El navegador del moderador guarda la sala; los participantes se conectan a él con WebRTC (PeerJS) |
 | Requisito | Que el servidor esté encendido | Que el moderador **mantenga abierta su pestaña** |
+| Capacidad medida | Hasta ~500 personas con respuesta menor a 1 s ([detalle](#capacidad-medida)) | Hasta ~50 personas (estimado) |
 | Recomendado para | Grupos grandes o redes escolares restrictivas | Uso rápido sin instalar nada |
 
 La app elige el modo sola: si la página la sirve el servidor Node.js usa **modo servidor**; si es estática (GitHub Pages) usa **modo P2P**. Se puede forzar con `?modo=p2p` o `?modo=servidor` en la URL.
@@ -123,11 +124,58 @@ También puedes probarlo sin editar nada con `?servidor=https://tu-app.onrender.
 - Depende de que el **moderador mantenga abierta su pestaña** y de que su equipo no se suspenda.
 - Usa servicios públicos gratuitos de terceros (servidor de señalización de PeerJS y STUN de Google). Si no están disponibles, la sala no abre.
 - Algunas redes escolares, corporativas o con VPN **bloquean WebRTC**. La app avisa “la red no permitió la conexión directa”; prueba con datos móviles o usa el modo servidor.
-- Recomendado para grupos de hasta ~30 personas; con más, el equipo del moderador hace más trabajo.
+- Recomendado hasta ~50 personas. Con más, la conexión de subida del moderador se vuelve el cuello de botella (ver [Capacidad medida](#capacidad-medida)).
 
 **Modo servidor (Node.js)**
 - Las salas se guardan **en memoria**: se pierden si el servidor se reinicia y se borran tras 12 horas sin actividad.
 - Los hostings gratuitos (como Render) “duermen” el servidor sin uso; la primera conexión puede tardar hasta un minuto.
+
+## Capacidad medida
+
+Prueba de carga del 21 de octubre de 2026: 10 rondas completas por escenario; cada participante usa su propia conexión y presiona en algún momento de los 3 segundos siguientes al inicio de la ronda. Todo corrió en una laptop (Intel i5 de 4 núcleos, 8 GB), sin la demora de una red real.
+
+**Modo servidor**
+
+| Participantes | “Registrado” (p95) | Aviso al último del grupo (p95) | Errores o desconexiones |
+|---:|---:|---:|---:|
+| 25 | 2 ms | 0.24 s | 0 |
+| 100 | 6 ms | 0.26 s | 0 |
+| 200 | 18 ms | 0.27 s | 0 |
+| 300 | 40 ms | 0.29 s | 0 |
+| 500 | 0.34 s | 0.54 s | 0 |
+| 750 | 0.86 s | 1.25 s | 0 |
+| 1000 | 4.6 s | 5.1 s | 0 |
+
+*p95 = el 95 % de los casos tardó eso o menos.* El aviso al grupo se agrupa cada 250 ms, por eso nunca baja de ~0.25 s. En todos los escenarios el **primer lugar se asignó bien en las 10 rondas**; las únicas diferencias de orden fueron entre presiones con menos de 40 ms de diferencia.
+
+- **Recomendado:** hasta ~500 personas. Con 750 funciona con ~1 s de demora; con 1000 llega a ~5 s.
+- Un juego de 10 rondas con 500 personas envía ~1.3 GB en total desde el servidor. Revisa el límite de tráfico de tu hosting.
+- Con red Wi‑Fi real y un servidor más modesto (los planes gratuitos tienen poca CPU), espera cifras menores.
+
+**Modo P2P (estimado)**
+
+No se pudo probar con WebRTC real. Se midió con el mismo código el trabajo del navegador del moderador, incluyendo validar todas las respuestas:
+
+| Participantes | CPU del moderador | Subida del moderador por ronda |
+|---:|---:|---:|
+| 25 | 1 % | 1.6 MB |
+| 50 | 3 % | 9 MB |
+| 100 | 14 % | 60 MB |
+| 200 | 86 % | 440 MB |
+
+Con 50 personas basta una conexión normal. Con 100 se necesita una subida estable de ~5 Mbps durante toda la ronda.
+
+**Repetir la prueba**
+
+```bash
+node scripts/prueba-carga.js --n 25,100,300 --rondas 10 --spread 3000
+```
+
+```bash
+node scripts/costo-p2p.js --n 25,50,100
+```
+
+Antes de la optimización (estado completo enviado a todos en cada presión), el modo servidor se caía con 100 personas y P2P llegaba a su límite con ~25.
 
 ## Privacidad y datos
 
@@ -168,7 +216,8 @@ public/                 Lo que se publica en GitHub Pages
   js/transport.js       Conexión: Socket.IO (servidor) o PeerJS (P2P)
   js/config.js          URL opcional de un servidor externo
   js/app.js             Interfaz
-test/game.test.js       Pruebas (node --test)
+test/                   Pruebas (node --test)
+scripts/                Prueba de carga y estimación del modo P2P
 .github/workflows/      Pruebas en cada cambio y publicación en Pages
 ```
 

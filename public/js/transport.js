@@ -3,7 +3,7 @@
 //  - P2PTransport: sin servidor propio; el navegador del moderador hace de servidor
 //    y los participantes se conectan a él con WebRTC (PeerJS). Ideal para GitHub Pages.
 import { Game, GameError } from './game.js';
-import { applyAction, randomCode } from './room.js';
+import { applyAction, randomCode, StateFeed } from './room.js';
 import config from './config.js';
 
 const PEERJS_URL = 'https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js';
@@ -219,8 +219,14 @@ class P2PTransport extends Emitter {
     this.role = 'host';
     this.code = code;
     this.game = info?.game ? Game.fromJSON(info.game) : new Game();
+    this.feed = new StateFeed(this.game, (hostMsg, playerMsg) => {
+      this.#broadcast({ type: 'state', state: playerMsg });
+      this.emit('state', hostMsg);
+      savedHost.set('p2p', { code: this.code, game: this.game.toJSON() });
+    });
     peer.on('connection', (conn) => this.#onConnection(conn));
-    this.#changed();
+    this.emit('state', this.feed.full(true));
+    savedHost.set('p2p', { code: this.code, game: this.game.toJSON() });
     return { code };
   }
 
@@ -231,7 +237,7 @@ class P2PTransport extends Emitter {
       if (cid && this.conns.get(cid) === conn) {
         this.conns.delete(cid);
         this.game.setConnected(cid, false);
-        this.#changed();
+        this.feed.changed(['players', 'ranking']);
       }
     });
     conn.on('error', () => {});
@@ -249,23 +255,25 @@ class P2PTransport extends Emitter {
         if (previous && previous !== conn) previous.close();
       }
       if (!conn.clientId) throw new GameError('Primero registra tu nombre.');
+      if (msg.action === 'sync') { reply({ ok: true, result: this.feed.full(false) }); return; }
       const out = applyAction(this.game, { clientId: conn.clientId, isHost: false }, msg.action, msg.payload ?? {});
       reply({ ok: true, result: out.result });
-      this.#changed(out.notify);
+      if (msg.action === 'join') { try { conn.send({ type: 'state', state: this.feed.full(false) }); } catch { /* cerrada */ } }
+      this.#changed(out);
     } catch (err) {
       if (!(err instanceof GameError)) console.error(err);
       reply({ ok: false, error: err instanceof GameError ? err.message : 'Error inesperado.' });
     }
   }
 
-  #changed(notify) {
-    if (notify) {
+  #changed({ notify, parts, urgent, patch }) {
+    // El aviso "ya terminó" viaja agrupado con el siguiente estado; los demás salen al instante.
+    if (notify?.kind === 'press') this.feed.event(notify);
+    else if (notify) {
       this.emit('notify', notify);
       this.#broadcast({ type: 'notify', notify });
     }
-    this.#broadcast({ type: 'state', state: this.game.snapshot() });
-    this.emit('state', this.game.snapshot({ includeAnswers: true }));
-    savedHost.set('p2p', { code: this.code, game: this.game.toJSON() });
+    this.feed.changed(parts, { urgent, patch });
   }
 
   #broadcast(msg) {
@@ -367,8 +375,9 @@ class P2PTransport extends Emitter {
   // ----- Común
   async action(action, payload = {}) {
     if (this.role === 'host') {
+      if (action === 'sync') return this.feed.full(true);
       const out = applyAction(this.game, { clientId: 'host', isHost: true }, action, payload);
-      this.#changed(out.notify);
+      this.#changed(out);
       return out.result;
     }
     return this.#request(action, payload);
@@ -376,6 +385,7 @@ class P2PTransport extends Emitter {
 
   close() {
     this.closed = true;
+    this.feed?.dispose();
     clearTimeout(this.reconnectTimer);
     try { this.peer?.destroy(); } catch { /* nada */ }
   }

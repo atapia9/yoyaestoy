@@ -1,5 +1,6 @@
 // Interfaz de "¡Yo ya estoy!": pantallas de inicio, moderador y participante.
-import { roundsToCSV, POINTS_WINNER, POINTS_CORRECT } from './game.js';
+import { roundsToCSV, summarizeRound, POINTS_WINNER, POINTS_CORRECT } from './game.js';
+import { mergeState } from './room.js';
 import { detectMode, createTransport, savedHost } from './transport.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -35,7 +36,10 @@ const app = {
   code: null,
   me: null, // id del participante
   name: null,
-  snap: null,
+  snap: null, // estado que muestra la pantalla (se arma uniendo los envíos del servidor)
+  myPress: null, // mi participación, mostrada al instante sin esperar el siguiente estado
+  vdData: null, // ronda que muestra la ventana de validación
+  syncing: false,
   offset: 0, // diferencia de reloj con el servidor / moderador
   vdRound: null,
 };
@@ -99,12 +103,25 @@ function onNotify(n) {
       systemNotify(`Ganador de la ronda ${n.round}`, `${n.name} · ${fmt(n.elapsedMs)}`);
       break;
     case 'resetRound':
+      app.myPress = null;
       toast(`↺ Ronda ${n.round} reiniciada: el cronómetro volvió a cero`);
       break;
     case 'resetGame':
+      app.myPress = null;
       toast('⟲ Juego reiniciado');
       break;
   }
+}
+
+// Avisos de "ya terminó" que llegan juntos. Con pocos se muestra cada uno; con muchos, un resumen.
+function onPressEvents(events) {
+  if (events.length <= 3) { events.forEach(onNotify); return; }
+  const first = events.find((n) => n.position === 1);
+  if (first) onNotify(first);
+  const rest = events.length - (first ? 1 : 0);
+  const last = events.at(-1);
+  toast(`✅ ${rest} persona${rest === 1 ? '' : 's'} más ya terminaron · van ${last.position}`);
+  if (!first) beep(880, 0.12);
 }
 
 function onStatus({ connected, message }) {
@@ -121,9 +138,12 @@ function show(screen) {
 }
 
 function wire(t) {
-  t.on('state', (snap) => {
-    app.snap = snap;
-    app.offset = snap.serverNow - Date.now();
+  t.on('state', (msg) => {
+    if (msg.events?.length) onPressEvents(msg.events);
+    const { view, needSync } = mergeState(app.snap, msg);
+    if (needSync) { requestSync(); return; }
+    app.snap = view;
+    app.offset = msg.serverNow - Date.now();
     render();
   });
   t.on('notify', onNotify);
@@ -211,7 +231,20 @@ function refreshResume() {
 }
 
 // ------------------------------------------------------------------ Render
-const lastRound = () => app.snap?.rounds.at(-1) ?? null;
+async function requestSync() {
+  if (app.syncing || !app.transport) return;
+  app.syncing = true;
+  try {
+    const full = await app.transport.action('sync');
+    app.snap = mergeState(null, full).view;
+    app.offset = full.serverNow - Date.now();
+    render();
+  } catch { /* se reintenta con el siguiente estado */ } finally {
+    app.syncing = false;
+  }
+}
+
+const lastRound = () => app.snap?.live ?? null;
 const openRound = () => (lastRound()?.status === 'open' ? lastRound() : null);
 
 function render() {
@@ -247,7 +280,7 @@ function logHtml(round, { showAnswers }) {
 }
 
 function rankingHtml(snap) {
-  const rows = snap.ranking.filter((r) => r.presses > 0 || r.connected);
+  const rows = (snap.ranking ?? []).filter((r) => r.presses > 0 || r.connected);
   if (!rows.length) return '<p class="empty">La clasificación aparecerá cuando haya participantes.</p>';
   const medal = (r) => (r.points > 0 && r.rank <= 3 ? `<span class="medal">${['🥇', '🥈', '🥉'][r.rank - 1]}</span>` : r.rank);
   const body = rows.map((r) => `<tr class="${r.playerId === app.me ? 'me' : ''}">
@@ -275,24 +308,24 @@ function rankingHtml(snap) {
 
 function summaryHtml(snap) {
   const rows = [];
+  const summaries = [...(snap.history ?? [])];
+  if (snap.live) summaries[snap.live.number - 1] = summarizeRound(snap.live);
   for (let i = 0; i < snap.maxRounds; i++) {
-    const r = snap.rounds[i];
+    const r = summaries[i];
     if (!r) {
       rows.push(`<tr class="future"><td class="num">${i + 1}</td><td colspan="5">—</td></tr>`);
       continue;
     }
-    const first = r.presses[0];
-    const winner = r.presses.find((p) => p.playerId === r.winnerId);
-    const pending = r.presses.some((p) => p.valid === null);
+    const { first, winner } = r;
     const status = r.status === 'open'
       ? '<span class="tag open">En curso</span>'
-      : pending && r.presses.length ? '<span class="tag pending">Por validar</span>' : '<span class="tag ok">Cerrada</span>';
+      : r.pending && r.count ? '<span class="tag pending">Por validar</span>' : '<span class="tag ok">Cerrada</span>';
     rows.push(`<tr>
       <td class="num">${r.number}</td>
       <td class="answer">${r.question ? esc(r.question) : '<span class="muted">Sin descripción</span>'}</td>
       <td>${first ? `${esc(first.name)} <span class="muted">${fmt(first.elapsedMs)}</span>` : '<span class="muted">—</span>'}</td>
       <td>${winner ? `🏆 ${esc(winner.name)} <span class="muted">${fmt(winner.elapsedMs)}</span>` : '<span class="muted">—</span>'}</td>
-      <td class="num">${r.presses.length}</td>
+      <td class="num">${r.count}</td>
       <td>${status}</td>
     </tr>`);
   }
@@ -305,12 +338,13 @@ function renderHost() {
   const snap = app.snap;
   const last = lastRound();
   const open = openRound();
-  const played = snap.rounds.length;
+  const played = snap.roundsPlayed;
+  const players = snap.players ?? [];
 
-  const connected = snap.players.filter((p) => p.connected);
+  const connected = players.filter((p) => p.connected);
   $('#playerCount').textContent = connected.length;
-  $('#playerList').innerHTML = snap.players.length
-    ? snap.players.map((p) => `<li class="${p.connected ? '' : 'off'}"><span class="dot"></span>${esc(p.name)}</li>`).join('')
+  $('#playerList').innerHTML = players.length
+    ? players.map((p) => `<li class="${p.connected ? '' : 'off'}"><span class="dot"></span>${esc(p.name)}</li>`).join('')
     : '<li class="off">Esperando participantes…</li>';
 
   let title;
@@ -327,7 +361,7 @@ function renderHost() {
   $('#btnValidate').disabled = !last;
   $('#btnResetRound').disabled = !last;
   $('#btnResetGame').disabled = !played;
-  $('#btnCsv').disabled = !snap.rounds.some((r) => r.presses.length);
+  $('#btnCsv').disabled = !played;
   $('#questionInput').disabled = Boolean(open) || played >= snap.maxRounds;
 
   const shown = open ?? last;
@@ -343,7 +377,8 @@ function renderPlayer() {
   const snap = app.snap;
   const last = lastRound();
   const open = openRound();
-  const mine = open?.presses.find((p) => p.playerId === app.me);
+  const mine = open?.presses.find((p) => p.playerId === app.me)
+    ?? (open && app.myPress?.round === open.number ? app.myPress : null);
   const btn = $('#bigButton');
 
   let title;
@@ -394,18 +429,25 @@ function renderPlayer() {
 function openValidate(roundNumber) {
   const last = lastRound();
   if (!last) return;
-  app.vdRound = roundNumber ?? last.number;
-  renderValidate();
+  showValidateRound(roundNumber ?? last.number);
   if (!$('#validateDialog').open) $('#validateDialog').showModal();
+}
+
+async function showValidateRound(number) {
+  app.vdRound = number;
+  // La ronda actual ya está en pantalla; las anteriores se piden completas al moderador/servidor.
+  app.vdData = number === lastRound()?.number ? null : await act('round', { number });
+  renderValidate();
 }
 
 function renderValidate() {
   const snap = app.snap;
-  const round = snap.rounds[app.vdRound - 1] ?? lastRound();
+  const live = lastRound();
+  const round = app.vdRound === live?.number || !app.vdData ? live : app.vdData;
   if (!round) return;
   app.vdRound = round.number;
-  $('#vdRound').innerHTML = snap.rounds
-    .map((r) => `<option value="${r.number}" ${r.number === round.number ? 'selected' : ''}>${r.number}${r.status === 'open' ? ' (en curso)' : ''}</option>`)
+  $('#vdRound').innerHTML = Array.from({ length: snap.roundsPlayed }, (_, i) => i + 1)
+    .map((n) => `<option value="${n}" ${n === round.number ? 'selected' : ''}>${n}${n === live?.number && live.status === 'open' ? ' (en curso)' : ''}</option>`)
     .join('');
   $('#vdQuestion').hidden = !round.question;
   $('#vdQuestion').textContent = round.question;
@@ -460,12 +502,19 @@ async function pressBuzzer() {
   if (btn.disabled) return;
   btn.disabled = true;
   unlockAudio();
+  const round = openRound()?.number;
   const result = await act('press', { answer: $('#answerInput').value });
-  if (result) navigator.vibrate?.(60);
+  if (result) {
+    app.myPress = { ...result, round };
+    navigator.vibrate?.(60);
+    render();
+  }
 }
 
-function downloadCSV() {
-  const blob = new Blob([roundsToCSV(app.snap.rounds)], { type: 'text/csv;charset=utf-8' });
+async function downloadCSV() {
+  const rounds = await act('export');
+  if (!rounds) return;
+  const blob = new Blob([roundsToCSV(rounds)], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `bitacora-sala-${app.code}-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -511,13 +560,16 @@ function bindEvents() {
   $('#btnCsv').addEventListener('click', downloadCSV);
 
   // Ventana de validación
-  $('#vdRound').addEventListener('change', (e) => { app.vdRound = Number(e.target.value); renderValidate(); });
+  $('#vdRound').addEventListener('change', (e) => showValidateRound(Number(e.target.value)));
   $('#vdList').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-valid]');
     if (!b) return;
     const playerId = b.parentElement.dataset.player;
     const valid = b.dataset.valid === '1' ? true : b.dataset.valid === '0' ? false : null;
-    act('validate', { round: app.vdRound, playerId, valid });
+    const number = app.vdRound;
+    act('validate', { round: number, playerId, valid }).then((round) => {
+      if (round && app.vdRound === number && number !== lastRound()?.number) { app.vdData = round; renderValidate(); }
+    });
   });
   $('#vdClose').addEventListener('click', () => $('#validateDialog').close());
 
