@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>¡Yo ya estoy!</title>
+  <meta name="description" content="Botón en línea para grupos: avisa a todos quién terminó primero una actividad, con bitácora, validación de respuestas y clasificación.">
+  <meta name="theme-color" content="#e5484d">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✋</text></svg>">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">✋ <span>¡Yo ya estoy!</span></div>
+    <div class="topbar-right">
+      <span id="modeBadge" class="badge" hidden></span>
+      <span id="connBadge" class="badge" hidden></span>
+      <button id="btnLeave" class="ghost small" hidden>Salir</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ============ INICIO ============ -->
+    <section id="screen-home" class="screen">
+      <div class="hero">
+        <h1>¿Quién termina primero?</h1>
+        <p>Un botón en línea para tu grupo. Cada participante lo presiona al terminar la actividad; todos reciben el aviso, se registra quién fue primero y el moderador valida las respuestas.</p>
+      </div>
+
+      <div class="home-grid">
+        <form id="joinForm" class="card" autocomplete="off">
+          <h2>🙋 Soy participante</h2>
+          <label>Tu nombre
+            <input id="joinName" required maxlength="30" placeholder="Ej. Ana López" autocomplete="nickname">
+          </label>
+          <label>Código de sala
+            <input id="joinCode" required maxlength="8" placeholder="Ej. K7M2" class="code-input" autocapitalize="characters" spellcheck="false">
+          </label>
+          <button type="submit" class="primary" id="btnJoin">Entrar a la sala</button>
+        </form>
+
+        <div class="card">
+          <h2>🧑‍🏫 Soy moderador</h2>
+          <p class="muted">Crea una sala, comparte el código y controla las rondas (hasta 10), la validación y la clasificación.</p>
+          <button id="btnCreate" class="primary">Crear sala</button>
+          <div id="resumeBox" hidden>
+            <p class="muted small-text">Tienes una sala guardada en este equipo.</p>
+            <button id="btnResume" class="secondary"></button>
+          </div>
+        </div>
+      </div>
+
+      <details class="card how">
+        <summary>¿Cómo funciona?</summary>
+        <ol>
+          <li>El moderador crea la sala y comparte el código o el enlace.</li>
+          <li>Cada participante escribe su nombre y entra.</li>
+          <li>El moderador inicia la ronda: arranca el cronómetro para todos.</li>
+          <li>Al terminar, cada participante presiona el botón rojo <strong>¿Cómo Vamos?</strong>; se pone verde con <strong>Yo Ya Estoy ! ! !</strong> (puede escribir su respuesta). Todo el grupo recibe el aviso.</li>
+          <li>El moderador cierra la ronda y valida en la ventana de validación qué respuestas son correctas.</li>
+          <li>El primero con respuesta correcta gana la ronda (3 pts); las demás correctas suman 1 pt. La clasificación se actualiza sola.</li>
+        </ol>
+      </details>
+    </section>
+
+    <!-- ============ MODERADOR ============ -->
+    <section id="screen-host" class="screen" hidden>
+      <div class="host-grid">
+        <div class="card room-card">
+          <div class="muted">Código de sala</div>
+          <div id="roomCode" class="room-code">----</div>
+          <div class="row">
+            <input id="shareLink" readonly aria-label="Enlace para participantes">
+            <button id="btnCopy" class="secondary">Copiar enlace</button>
+          </div>
+          <h3>Participantes <span id="playerCount" class="pill">0</span></h3>
+          <ul id="playerList" class="chips"></ul>
+        </div>
+
+        <div class="card control-card">
+          <div class="round-head">
+            <h2 id="hostRoundTitle">Ronda 1 de 10</h2>
+            <div id="hostTimer" class="timer" data-timer>0.00 s</div>
+          </div>
+          <div class="progress" aria-hidden="true"><div id="hostProgress"></div></div>
+          <label>Pregunta o actividad de la ronda (opcional)
+            <input id="questionInput" maxlength="200" placeholder="Ej. Resuelve el ejercicio 3 de la página 45">
+          </label>
+          <div class="row wrap actions">
+            <button id="btnStart" class="primary">▶ Iniciar ronda</button>
+            <button id="btnClose" class="secondary">⏹ Cerrar ronda</button>
+            <button id="btnValidate" class="secondary">✔ Validar respuestas</button>
+            <button id="btnResetRound" class="warn">↺ Reiniciar ronda</button>
+            <button id="btnResetGame" class="danger">⟲ Reiniciar juego</button>
+          </div>
+          <h3>Bitácora de la ronda <span id="hostLogRound" class="muted"></span></h3>
+          <div id="hostLog"></div>
+        </div>
+
+        <div class="card">
+          <h3>🏆 Clasificación</h3>
+          <div id="hostRanking"></div>
+        </div>
+
+        <div class="card">
+          <div class="row between">
+            <h3>📋 Resumen de rondas</h3>
+            <button id="btnCsv" class="secondary small">⬇ Bitácora CSV</button>
+          </div>
+          <div id="hostSummary"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PARTICIPANTE ============ -->
+    <section id="screen-player" class="screen" hidden>
+      <div class="player-grid">
+        <div class="card buzzer-card">
+          <div class="who">Hola, <strong id="playerName"></strong> · Sala <strong id="playerRoom"></strong></div>
+          <h2 id="playerRoundTitle">Esperando al moderador…</h2>
+          <p id="playerQuestion" class="question" hidden></p>
+          <div id="playerTimer" class="timer big" data-timer>0.00 s</div>
+          <input id="answerInput" maxlength="200" placeholder="Tu respuesta (opcional)" aria-label="Tu respuesta">
+          <button id="bigButton" class="buzzer" disabled>¿Cómo<br>Vamos?</button>
+          <p id="playerStatus" class="status" aria-live="polite"></p>
+          <button id="btnNotif" class="ghost small" hidden>🔔 Activar notificaciones del sistema</button>
+        </div>
+
+        <div class="card">
+          <h3>Bitácora de la ronda <span id="playerLogRound" class="muted"></span></h3>
+          <div id="playerLog"></div>
+        </div>
+        <div class="card">
+          <h3>🏆 Clasificación</h3>
+          <div id="playerRanking"></div>
+        </div>
+        <div class="card">
+          <h3>📋 Resumen de rondas</h3>
+          <div id="playerSummary"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Ventana de validación de respuestas (moderador) -->
+  <dialog id="validateDialog" aria-labelledby="vdTitle">
+    <div class="dialog-head">
+      <h2 id="vdTitle">Validar respuestas</h2>
+      <label class="inline">Ronda
+        <select id="vdRound"></select>
+      </label>
+    </div>
+    <p id="vdQuestion" class="question"></p>
+    <div id="vdList"></div>
+    <p class="muted small-text">El primero (por tiempo) con respuesta <strong>correcta</strong> gana la ronda y suma 3 pts. Las demás correctas suman 1 pt. Puedes cambiar la validación cuando quieras.</p>
+    <div class="row end">
+      <button id="vdClose" class="primary">Listo</button>
+    </div>
+  </dialog>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <footer class="footer">
+    Este material fue elaborado con asistencia de Claude (Anthropic) y revisado por [nombre].
+  </footer>
+</body>
+</html>

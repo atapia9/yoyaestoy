@@ -1,0 +1,21 @@
+{
+  "name": "yoyaestoy",
+  "version": "1.0.0",
+  "description": "Botón en línea para grupos: avisa a todos quién terminó primero una actividad, lleva bitácora, validación y clasificación de hasta 10 rondas.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["buzzer", "aula", "socket.io", "github-pages", "peerjs"],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  }
+}
